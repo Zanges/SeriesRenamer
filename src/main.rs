@@ -20,7 +20,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Series Renamer",
         native_options,
-        Box::new(|cc| Ok(Box::new(series_renamer::TemplateApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(series_renamer::SeriesRenamer::new(cc)))),
     )
 }
 
@@ -50,7 +50,7 @@ fn main() {
             .start(
                 canvas,
                 web_options,
-                Box::new(|cc| Ok(Box::new(series_renamer::TemplateApp::new(cc)))),
+                Box::new(|cc| Ok(Box::new(series_renamer::SeriesRenamer::new(cc)))),
             )
             .await;
 
