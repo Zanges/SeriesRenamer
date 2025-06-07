@@ -5,6 +5,7 @@ pub struct SeriesRenamer {
     // Example stuff:
     pub imdb_link: String,
     pub series_directory: String,
+    pub show_process_window: bool,
 }
 
 impl Default for SeriesRenamer {
@@ -12,6 +13,7 @@ impl Default for SeriesRenamer {
         Self {
             imdb_link: String::new(),
             series_directory: String::new(),
+            show_process_window: false,
         }
     }
 }
@@ -54,15 +56,36 @@ impl eframe::App for SeriesRenamer {
             if ui.button("Process").clicked() {
                 // open a new window
                 if !self.imdb_link.is_empty() && !self.series_directory.is_empty() {
-                    // Here you would add the logic to process the IMDB link and series directory.
-                    // For now, we will just print them to the console.
-                    println!("IMDB Link: {}", self.imdb_link);
-                    println!("Series Directory: {}", self.series_directory);
+                    self.show_process_window = true;
                 } else {
                     ui.label("Please enter both IMDB link and select a directory.");
                 }
             }
         });
+        
+        let mut process_window_close_button_clicked = false;
+        if self.show_process_window {
+            // `egui::Window::new` creates a new window.
+            // The `.open()` method provides a close button and binds visibility to our boolean.
+            egui::Window::new("Processing Window")
+                .open(&mut self.show_process_window) // Binds the window's visibility to self.show_process_window
+                .vscroll(true)
+                .show(ctx, |ui| {
+                    // Add the content for your new window here.
+                    ui.label("Processing the following:");
+                    ui.separator();
+                    ui.label(format!("IMDB Link: {}", self.imdb_link));
+                    ui.label(format!("Series Directory: {}", self.series_directory));
+
+                    if ui.button("Close").clicked() {
+                        process_window_close_button_clicked = true;
+                    }
+                });
+        }
+        
+        if process_window_close_button_clicked {
+            self.show_process_window = false;
+        }
 
         // Request a repaint if necessary.
         ctx.request_repaint();
