@@ -4,17 +4,23 @@ use walkdir::WalkDir;
 
 mod settings;
 
+// Communication channel for sending data from background thread to UI thread
+#[derive(Debug)] // Added derive for easier debugging
 enum AppMessage {
     DataFetched(Vec<Episode>, Vec<LocalFile>),
     FetchError(String),
 }
 
-#[derive(Debug, Clone)]
+// Represents a local file found in the directory
+#[derive(Debug, Clone, PartialEq, Eq, Hash)] // Added derive for drag-and-drop state
 pub struct LocalFile {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Deserialize, Default)]
+// --- Data Structures for OMDB API Response ---
+// We only care about a few fields, so we can ignore the rest with `#[serde(default)]`
+
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq, Hash)] // Added derive for drag-and-drop state
 #[serde(rename_all = "PascalCase")]
 pub struct Episode {
     pub title: String,
@@ -31,11 +37,11 @@ struct SeasonResponse {
     pub episodes: Vec<Episode>,
 }
 
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
+// --- Main Application State ---
+
 #[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
+#[serde(default)]
 pub struct SeriesRenamer {
-    // Example stuff:
     pub imdb_link: String,
     pub series_directory: String,
     pub show_process_window: bool,
@@ -51,6 +57,8 @@ pub struct SeriesRenamer {
     fetch_status: String,
     #[serde(skip)]
     is_fetching: bool,
+
+    // Using Option because the receiver is only present during a fetch operation.
     #[serde(skip)]
     receiver: Option<crossbeam_channel::Receiver<AppMessage>>,
 }
@@ -72,7 +80,6 @@ impl Default for SeriesRenamer {
 }
 
 impl SeriesRenamer {
-    /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app: SeriesRenamer = if let Some(storage) = cc.storage {
             eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
@@ -95,8 +102,8 @@ impl SeriesRenamer {
 }
 
 impl eframe::App for SeriesRenamer {
-    /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // --- Check for messages from background thread ---
         if self.is_fetching {
             if let Some(rx) = &self.receiver {
                 match rx.try_recv() {
@@ -105,27 +112,25 @@ impl eframe::App for SeriesRenamer {
                         self.files = files;
                         self.is_fetching = false;
                         self.fetch_status = format!("Fetched {} episodes and {} files.", self.episodes.len(), self.files.len());
-
-                        // --- FOR DEBUGGING ---
-                        // This proves our data fetching works.
-                        // We will remove this later.
-                        println!("Episodes: {:#?}", self.episodes);
-                        println!("Files: {:#?}", self.files);
-
                     }
                     Ok(AppMessage::FetchError(err_msg)) => {
                         self.is_fetching = false;
                         self.fetch_status = err_msg;
                     }
-                    Err(_) => {
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
                         // Still waiting for data
-                        ctx.request_repaint(); // Keep checking
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                        // The channel was disconnected, which is unexpected.
+                        self.is_fetching = false;
+                        self.fetch_status = "Error: Worker thread disconnected.".to_string();
                     }
                 }
             }
         }
-        
-        // Use the `egui::CentralPanel` to create a central area in the window.
+
+
+        // --- Main Window UI ---
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Series Renamer");
             ui.separator();
@@ -137,7 +142,8 @@ impl eframe::App for SeriesRenamer {
 
             ui.horizontal(|ui| {
                 ui.label("Series Directory:");
-                ui.text_edit_singleline(&mut self.series_directory);
+                // Use a label to show the path, as it can be long
+                ui.label(self.series_directory.as_str());
                 if ui.button("Browse...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.series_directory = path.to_string_lossy().to_string();
@@ -150,6 +156,8 @@ impl eframe::App for SeriesRenamer {
                     self.show_process_window = true;
                     self.is_fetching = true;
                     self.fetch_status = "Fetching data...".to_string();
+                    self.episodes.clear();
+                    self.files.clear();
 
                     // --- Start background data fetching ---
                     let (sender, receiver) = crossbeam_channel::unbounded();
@@ -158,11 +166,11 @@ impl eframe::App for SeriesRenamer {
                     let api_key = self.api_key.clone();
                     let imdb_link = self.imdb_link.clone();
                     let series_dir = self.series_directory.clone();
-                    let ehttp_ctx = ctx.clone();
 
                     std::thread::spawn(move || {
-                        // --- 1. Scan for files ---
-                        let files = WalkDir::new(series_dir)
+                        // --- 1. Scan for files (Moved inside the thread) ---
+                        // This is a blocking operation, so it must be off the main UI thread.
+                        let files: Vec<LocalFile> = WalkDir::new(series_dir)
                             .into_iter()
                             .filter_map(Result::ok)
                             .filter(|e| e.file_type().is_file())
@@ -170,13 +178,22 @@ impl eframe::App for SeriesRenamer {
                             .collect();
 
                         // --- 2. Fetch episodes (simplified for one season) ---
-                        // A real implementation needs to get the IMDb ID from the link,
-                        // then fetch total seasons, then loop to fetch each season.
-                        // For now, we'll hardcode one season as a proof-of-concept.
-                        let imdb_id = imdb_link.split('/').filter(|s| s.starts_with("tt")).next().unwrap_or("");
+                        let imdb_id_result = imdb_link.split('/')
+                            .find(|s| s.starts_with("tt"))
+                            .map(String::from);
+
+                        let imdb_id = match imdb_id_result {
+                            Some(id) => id,
+                            None => {
+                                let _ = sender.send(AppMessage::FetchError("Could not find IMDb ID (e.g., 'tt123456') in the link.".to_string()));
+                                return;
+                            }
+                        };
+
                         let request_url = format!("http://www.omdbapi.com/?i={}&Season=1&apikey={}", imdb_id, api_key);
 
                         let request = ehttp::Request::get(request_url);
+
                         ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
                             match result {
                                 Ok(response) => {
@@ -199,38 +216,43 @@ impl eframe::App for SeriesRenamer {
                             }
                         });
                     });
+                } else {
+                    self.fetch_status = "Please provide both an IMDb link and a directory.".to_string();
                 }
             }
+            ui.label(&self.fetch_status);
         });
-        
-        let mut process_window_close_button_clicked = false;
+
+        // --- Processing Window ---
+        let mut close_window = false;
         if self.show_process_window {
             egui::Window::new("Processing Window")
                 .open(&mut self.show_process_window)
                 .vscroll(true)
                 .default_size([800.0, 600.0])
                 .show(ctx, |ui| {
-                    ui.label(&self.fetch_status);
                     if self.is_fetching {
+                        ui.label("Fetching data...");
                         ui.spinner();
-                    } else {
+                    } else if !self.episodes.is_empty() || !self.files.is_empty() {
                         // We will build the drag-and-drop UI here in the next stage.
                         ui.label("Ready for drag and drop!");
+                    } else {
+                        ui.label(&self.fetch_status);
                     }
+
                     if ui.button("Close").clicked() {
-                        process_window_close_button_clicked = true;
+                        close_window = true;
                     }
                 });
         }
-        
-        if process_window_close_button_clicked {
+        if close_window {
             self.show_process_window = false;
         }
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint();
     }
 
-    /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
