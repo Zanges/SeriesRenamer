@@ -1,0 +1,101 @@
+name: Release
+
+# This workflow runs whenever a new tag that looks like a version number (e.g., v1.2.3) is pushed.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  # The 'build-release' job compiles the application for different operating systems.
+  build-release:
+    name: Build Release
+    # It runs on a matrix of operating systems to create builds for each one.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux (Ubuntu) build configuration
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: series-renamer-linux-x86_64
+            asset_name: series-renamer-linux-x86_64.tar.gz
+          # Windows build configuration
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: series-renamer-windows-x86_64
+            asset_name: series-renamer-windows-x86_64.zip
+          # macOS build configuration
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: series-renamer-macos-x86_64
+            asset_name: series-renamer-macos-x86_64.tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+
+      # Installs required libraries for the Linux build, based on your README.md.
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+
+      # Compiles the Rust code in release mode for the specified target.
+      - name: Build binary
+        run: cargo build --verbose --release --target ${{ matrix.target }}
+
+      # Packages the compiled binary into a compressed archive.
+      - name: Package for Linux/macOS
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
+        run: |
+          mkdir release
+          cp target/${{ matrix.target }}/release/series_renamer release/
+          tar -czf ${{ matrix.asset_name }} -C release .
+
+      - name: Package for Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir release
+          cp target/${{ matrix.target }}/release/series_renamer.exe release/
+          # 7z is a powerful archiver available on Windows runners.
+          7z a ${{ matrix.asset_name }} ./release/*
+
+      # Uploads the packaged build as a workflow artifact to be used in the next job.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.asset_name }}
+
+  # The 'create-release' job creates a new GitHub Release and uploads the builds.
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    # This job depends on the successful completion of the 'build-release' job.
+    needs: build-release
+    permissions:
+      # This permission is required to create a release.
+      contents: write
+    steps:
+      # Downloads all the build artifacts that were uploaded in the previous job.
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Uses a popular action to create a GitHub Release.
+      # It automatically finds the tag, creates a release, and attaches the build files.
+      - name: Create Release and Upload Assets
+        uses: ncipollo/release-action@v1
+        with:
+          # This glob pattern finds all the downloaded build archives.
+          artifacts: "artifacts/*/*"
+          # The GITHUB_TOKEN is automatically provided by GitHub.
+          token: ${{ secrets.GITHUB_TOKEN }}
