@@ -2944,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "series_renamer"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "confy",
  "crossbeam-channel",

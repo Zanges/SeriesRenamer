@@ -181,7 +181,7 @@ jobs:
         with:
           # By default, this action will fail if a release for the tag already exists.
           # This prevents creating a duplicate release when bump is set to 'none'.
-          artifactErrorsFail: false
+          makeLatest: true
           artifacts: "artifacts/*/*"
           # The tag name is passed from the first job.
           tag: ${{ needs.prepare_release_tag.outputs.version_tag }}
