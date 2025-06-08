@@ -50,6 +50,7 @@ enum DialogAction {
 pub struct SeriesRenamer {
     pub imdb_link: String,
     pub series_directory: String,
+    pub season_number: u32,
     pub show_process_window: bool,
 
     #[serde(skip)]
@@ -83,6 +84,7 @@ impl Default for SeriesRenamer {
         Self {
             imdb_link: String::new(),
             series_directory: String::new(),
+            season_number: 1,
             show_process_window: false,
             api_key: String::new(),
             episodes: Vec::new(),
@@ -156,6 +158,10 @@ impl eframe::App for SeriesRenamer {
                 ui.text_edit_singleline(&mut self.imdb_link);
             });
             ui.horizontal(|ui| {
+                ui.label("Season:");
+                ui.add(egui::DragValue::new(&mut self.season_number).clamp_range(1..=99));
+            });
+            ui.horizontal(|ui| {
                 ui.label("Series Directory:");
                 ui.label(self.series_directory.as_str());
                 if ui.button("Browse...").clicked() {
@@ -173,10 +179,11 @@ impl eframe::App for SeriesRenamer {
                     self.files.clear();
                     let (sender, receiver) = crossbeam_channel::unbounded();
                     self.receiver = Some(receiver);
-                    let (api_key, imdb_link, series_dir) = (
+                    let (api_key, imdb_link, series_dir, season_number) = (
                         self.api_key.clone(),
                         self.imdb_link.clone(),
                         self.series_directory.clone(),
+                        self.season_number,
                     );
                     std::thread::spawn(move || {
                         let files: Vec<LocalFile> = WalkDir::new(series_dir)
@@ -197,8 +204,8 @@ impl eframe::App for SeriesRenamer {
                             }
                         };
                         let request_url = format!(
-                            "http://www.omdbapi.com/?i={}&Season=1&apikey={}",
-                            imdb_id, api_key
+                            "http://www.omdbapi.com/?i={}&Season={}&apikey={}",
+                            imdb_id, season_number, api_key
                         );
                         let request = ehttp::Request::get(request_url);
                         ehttp::fetch(request, move |result| match result {
@@ -250,8 +257,8 @@ impl eframe::App for SeriesRenamer {
                         if let Some(extension) = original_path.extension().and_then(|s| s.to_str())
                         {
                             let new_name = format!(
-                                "S01E{} - {}.{}",
-                                episode.episode, episode.title, extension
+                                "S{:02}E{} - {}.{}",
+                                self.season_number, episode.episode, episode.title, extension
                             );
 
                             if let Some(parent_dir) = original_path.parent() {
@@ -362,7 +369,7 @@ impl SeriesRenamer {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (episode, file) in &self.rename_plan {
                         let extension = file.path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                        let new_name = format!("S01E{} - {}.{}", episode.episode, episode.title, extension);
+                        let new_name = format!("S{:02}E{} - {}.{}", self.season_number, episode.episode, episode.title, extension);
                         ui.label(format!(
                             "{} -> {}",
                             file.path.file_name().unwrap().to_str().unwrap(),
