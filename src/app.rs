@@ -37,6 +37,12 @@ struct SeasonResponse {
     pub episodes: Vec<Episode>,
 }
 
+// Action to be taken after the confirmation dialog is closed
+enum DialogAction {
+    Confirm,
+    Cancel,
+}
+
 // --- Main Application State ---
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -67,6 +73,9 @@ pub struct SeriesRenamer {
     file_episode_inputs: HashMap<PathBuf, String>,
     #[serde(skip)]
     show_confirmation_dialog: bool,
+    // Holds the action to be taken after the confirmation dialog
+    #[serde(skip)]
+    action_after_confirm: Option<DialogAction>,
 }
 
 impl Default for SeriesRenamer {
@@ -84,6 +93,7 @@ impl Default for SeriesRenamer {
             rename_plan: HashMap::new(),
             file_episode_inputs: HashMap::new(),
             show_confirmation_dialog: false,
+            action_after_confirm: None,
         }
     }
 }
@@ -229,6 +239,66 @@ impl eframe::App for SeriesRenamer {
         // --- Processing and Confirmation Windows ---
         self.show_assignment_window(ctx);
         self.show_confirmation_window(ctx);
+
+        // --- Handle deferred actions ---
+        if let Some(action) = self.action_after_confirm.take() {
+            match action {
+                DialogAction::Confirm => {
+                    let mut rename_results = Vec::new();
+                    for (episode, file) in &self.rename_plan {
+                        let original_path = &file.path;
+                        if let Some(extension) = original_path.extension().and_then(|s| s.to_str())
+                        {
+                            let new_name = format!(
+                                "S01E{} - {}.{}",
+                                episode.episode, episode.title, extension
+                            );
+
+                            if let Some(parent_dir) = original_path.parent() {
+                                let new_path = parent_dir.join(&new_name);
+                                match std::fs::rename(original_path, &new_path) {
+                                    Ok(_) => {
+                                        rename_results.push(format!(
+                                            "Successfully renamed '{}' to '{}'",
+                                            original_path.display(),
+                                            new_name
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        rename_results.push(format!(
+                                            "ERROR renaming {}: {}",
+                                            original_path.display(),
+                                            e
+                                        ));
+                                    }
+                                }
+                            } else {
+                                rename_results.push(format!(
+                                    "ERROR: Could not get parent directory for {}",
+                                    original_path.display()
+                                ));
+                            }
+                        } else {
+                            rename_results.push(format!(
+                                "ERROR: Could not get file extension for {}",
+                                original_path.display()
+                            ));
+                        }
+                    }
+
+                    self.fetch_status = rename_results.join("\n");
+                    self.show_confirmation_dialog = false;
+                    self.show_process_window = false;
+                    self.rename_plan.clear();
+                    self.episodes.clear();
+                    self.files.clear();
+                    self.file_episode_inputs.clear();
+                }
+                DialogAction::Cancel => {
+                    self.show_confirmation_dialog = false;
+                }
+            }
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -282,16 +352,17 @@ impl SeriesRenamer {
         if !self.show_confirmation_dialog {
             return;
         }
-        let mut is_open = self.show_confirmation_dialog;
+
         egui::Window::new("Confirm Renames")
             .collapsible(false)
             .resizable(false)
-            .open(&mut is_open)
+            .open(&mut self.show_confirmation_dialog)
             .show(ctx, |ui| {
                 ui.label("Are you sure you want to perform the following renames?");
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (episode, file) in &self.rename_plan {
-                        let new_name = format!("S01E{} - {}", episode.episode, episode.title); // Example format
+                        let extension = file.path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        let new_name = format!("S01E{} - {}.{}", episode.episode, episode.title, extension);
                         ui.label(format!(
                             "{} -> {}",
                             file.path.file_name().unwrap().to_str().unwrap(),
@@ -302,16 +373,13 @@ impl SeriesRenamer {
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Confirm").clicked() {
-                        println!("Renaming files..."); // Placeholder for actual file I/O
-                        self.show_confirmation_dialog = false;
-                        self.show_process_window = false; // Close main window after rename
+                        self.action_after_confirm = Some(DialogAction::Confirm);
                     }
                     if ui.button("Cancel").clicked() {
-                        self.show_confirmation_dialog = false;
+                        self.action_after_confirm = Some(DialogAction::Cancel);
                     }
                 });
             });
-        self.show_confirmation_dialog = is_open;
     }
 
     /// Builds the rename plan from the user's text inputs.
