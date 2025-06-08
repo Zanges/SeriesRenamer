@@ -231,6 +231,19 @@ impl eframe::App for SeriesRenamer {
     }
 }
 
+/// A temporary container for the result of a drag-and-drop operation.
+#[derive(Debug, Clone)]
+enum DragDropResult {
+    None,
+    Assign {
+        file: LocalFile,
+        episode: Episode,
+    },
+    Unassign {
+        file: LocalFile,
+    },
+}
+
 // --- Window and UI Logic ---
 impl SeriesRenamer {
     fn show_dnd_window(&mut self, ctx: &egui::Context) {
@@ -240,21 +253,37 @@ impl SeriesRenamer {
 
         let mut is_open = self.show_process_window;
         egui::Window::new("Assign Files to Episodes")
+            .id(egui::Id::new("dnd_window"))
             .open(&mut is_open)
-            .vscroll(true)
+            .vscroll(false)
+            .resizable(true)
             .default_size([900.0, 600.0])
             .show(ctx, |ui| {
                 if self.is_fetching {
-                    ui.spinner();
+                    ui.centered_and_justified(|ui| {
+                        ui.spinner();
+                        ui.label("Fetching data...");
+                    });
                 } else if self.episodes.is_empty() {
-                    ui.label(&self.fetch_status);
+                    ui.centered_and_justified(|ui| {
+                        ui.label(&self.fetch_status);
+                    });
                 } else {
-                    self.dnd_ui(ui);
+                    // This frame will ensure the UI inside takes up the full window space
+                    // before the bottom button panel is drawn.
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        self.dnd_ui(ui);
+                    });
                 }
-                ui.separator();
-                if !self.rename_plan.is_empty() && ui.button("Confirm Rename Plan").clicked() {
-                    self.show_confirmation_dialog = true;
-                }
+
+                // Place the confirmation button at the bottom
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    if !self.rename_plan.is_empty() && ui.button("Confirm Rename Plan").clicked() {
+                        self.show_confirmation_dialog = true;
+                    }
+                    ui.separator();
+                });
             });
         self.show_process_window = is_open;
     }
@@ -272,10 +301,11 @@ impl SeriesRenamer {
                 ui.label("Are you sure you want to perform the following renames?");
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (episode, file) in &self.rename_plan {
+                        let new_name = format!("{} - {}", episode.episode, episode.title);
                         ui.label(format!(
                             "{} -> {}",
                             file.path.file_name().unwrap().to_str().unwrap(),
-                            episode.title
+                            new_name
                         ));
                     }
                 });
@@ -294,160 +324,151 @@ impl SeriesRenamer {
         self.show_confirmation_dialog = is_open;
     }
 
+    /// This is the corrected UI logic for the drag-and-drop view.
     fn dnd_ui(&mut self, ui: &mut egui::Ui) {
-        // Get all the state we need from `ui.ctx()` *before* the conflicting borrow.
-        let dragged_id = ui.ctx().dragged_id();
-        let is_anything_dragged = dragged_id.is_some();
-        let pointer_pos = ui.ctx().pointer_interact_pos();
-        let pointer_released = ui.input(|i| i.pointer.primary_released());
-        let style = ui.style().clone();
+        let mut drag_drop_result = DragDropResult::None;
+        let main_dnd_id = egui::Id::new("main_dnd_id");
 
-        let mut file_to_unassign: Option<LocalFile> = None;
-        let mut dropped_on_episode: Option<(Episode, LocalFile)> = None;
-
-        // Extract the dragged file data here if the pointer is released.
-        if pointer_released {
-            if let Some(id) = dragged_id {
-                if let Some(file) = ui.ctx().data_mut(|d| d.get_temp::<LocalFile>(id)) {
-                    file_to_unassign = Some(file.clone());
-                }
-            }
-        }
-
+        // Use `ui.columns` for a robust two-column layout. This is the key fix.
         ui.columns(2, |columns| {
-            // --- Left Column: Episodes (Drop Target) ---
-            columns[0].vertical_centered_justified(|ui| {
+            // --- Left Column: Episodes ---
+            egui::Frame::group(columns[0].style()).show(&mut columns[0], |ui| {
                 ui.heading("Episodes");
-            });
-            egui::ScrollArea::vertical().show(&mut columns[0], |ui| {
-                for episode in self.episodes.clone() {
-                    let (rect, response) = drop_target_slot(ui);
-                    let is_hovered = is_anything_dragged && response.hovered();
+                ui.separator();
 
-                    if is_hovered {
-                        ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgba_premultiplied(0, 255, 0, 20));
-                    }
+                egui::ScrollArea::vertical()
+                    .id_source("episodes_scroll_area")
+                    .auto_shrink([false; 2]) // Fill available vertical space
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            for episode in self.episodes.clone() {
+                                let (rect, _response) = drop_target_slot(ui);
+                                let is_hovered = ui.rect_contains_pointer(rect);
 
-                    // Correctly allocate a sub-ui for the episode slot.
-                    // This uses a deprecated function, but it's the simplest fix for the immediate error.
-                    // The modern approach would be `ui.child_ui(rect, *ui.layout())`.
-                    ui.allocate_ui_at_rect(rect, |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.label(format!("E{}: {}", episode.episode, episode.title));
-                            if let Some(file) = self.rename_plan.get(&episode) {
-                                // Allow dragging assigned files *out* of the slot
-                                let item_id = egui::Id::new(&file.path);
-                                // Interact with the full area of the sub-ui.
-                                let assigned_response = ui.interact(ui.max_rect(), item_id, egui::Sense::drag());
-                                if assigned_response.is_pointer_button_down_on() {
-                                    ui.ctx().set_dragged_id(item_id);
-                                    ui.ctx().data_mut(|d| d.insert_temp(item_id, file.clone()));
+                                ui.allocate_ui_at_rect(rect, |child_ui| {
+                                    egui::Frame::none()
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(child_ui, |ui| {
+                                            ui.vertical(|ui| {
+                                                if let Some(file) = self.rename_plan.get(&episode) {
+                                                    let item_id = egui::Id::new(&file.path);
+                                                    if ui.interact(ui.max_rect(), item_id, egui::Sense::drag()).is_pointer_button_down_on(){
+                                                        ui.ctx().set_dragged_id(item_id);
+                                                        ui.ctx().data_mut(|d| d.insert_temp(main_dnd_id, file.clone()));
+                                                    }
+                                                    ui.label(egui::RichText::new(format!("E{}: {}", episode.episode, episode.title)).strong());
+                                                    ui.add(egui::Label::new(
+                                                        egui::RichText::new(file.path.file_name().unwrap().to_str().unwrap())
+                                                            .color(egui::Color32::GREEN),
+                                                    ).wrap(),
+                                                    ).on_hover_text(file.path.to_str().unwrap());
+                                                } else {
+                                                    ui.label(egui::RichText::new(format!("E{}: {}", episode.episode, episode.title)).strong());
+                                                    ui.weak("...drop file here...");
+                                                }
+                                            });
+                                        });
+                                });
+
+                                // Handle drop onto this slot
+                                if is_hovered && ui.input(|i| i.pointer.any_released()) {
+                                    if let Some(file) = ui.ctx().data(|d| d.get_temp::<LocalFile>(main_dnd_id)) {
+                                        drag_drop_result = DragDropResult::Assign { file, episode: episode.clone() };
+                                    }
                                 }
-                                ui.colored_label(
-                                    egui::Color32::GREEN,
-                                    file.path.file_name().unwrap().to_str().unwrap(),
-                                );
-                            } else {
-                                ui.weak("...drop file here...");
                             }
                         });
                     });
-
-
-                    // Handle drop
-                    if is_anything_dragged && pointer_released && is_hovered {
-                        if let Some(id) = dragged_id {
-                            if let Some(file) = ui.ctx().data_mut(|d| d.get_temp::<LocalFile>(id)) {
-                                dropped_on_episode = Some((episode.clone(), file.clone()));
-                            }
-                        }
-                    }
-                }
             });
 
-            // --- Right Column: Files (Drag Source & Drop Target for Un-assigning) ---
-            columns[1].vertical_centered_justified(|ui| {
+            // --- Right Column: Unassigned Files ---
+            let unassign_area_response = egui::Frame::group(columns[1].style()).show(&mut columns[1], |ui| {
                 ui.heading("Unassigned Files");
-            });
-            let right_column_rect = egui::Frame::group(&style)
-                .show(&mut columns[1], |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        self.files.retain_mut(|file| {
-                            let item_id = egui::Id::new(&file.path);
-                            if ui.ctx().is_being_dragged(item_id) {
-                                return true;
+                ui.separator();
+
+                egui::ScrollArea::vertical()
+                    .id_source("files_scroll_area")
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            // Note: we iterate over a clone so we can modify self.files if needed,
+                            // although the main logic now happens in the match statement below.
+                            for file in &self.files {
+                                let item_id = egui::Id::new(&file.path);
+                                // Don't show the item in the list if it's currently being dragged.
+                                if ui.ctx().is_being_dragged(item_id) { continue; }
+
+                                let (rect, _response) = drag_source_slot(ui);
+                                if ui.interact(rect, item_id, egui::Sense::drag()).is_pointer_button_down_on() {
+                                    ui.ctx().set_dragged_id(item_id);
+                                    ui.ctx().data_mut(|d| d.insert_temp(main_dnd_id, file.clone()));
+                                }
+
+                                ui.allocate_ui_at_rect(rect, |child_ui| {
+                                    child_ui.centered_and_justified(|ui| {
+                                        ui.add(egui::Label::new(file.path.file_name().unwrap().to_str().unwrap()).wrap())
+                                            .on_hover_text(file.path.to_str().unwrap());
+                                    });
+                                });
                             }
-
-                            let (rect, _response) = drag_source_slot(ui);
-                            if ui.interact(rect, item_id, egui::Sense::drag()).is_pointer_button_down_on() {
-                                ui.ctx().set_dragged_id(item_id);
-                                ui.ctx().data_mut(|d| d.insert_temp(item_id, file.clone()));
-                            }
-
-                            ui.put(rect, |ui: &mut egui::Ui| {
-                                ui.label(file.path.file_name().unwrap().to_str().unwrap())
-                            });
-
-                            true
                         });
                     });
-                })
-                .response
-                .rect;
+            });
 
-            // Handle dropping a file on the right column to un-assign it
-            let is_hovered = pointer_pos.map_or(false, |p| right_column_rect.contains(p));
-            if is_anything_dragged && pointer_released && is_hovered {
-                if let Some(file) = &file_to_unassign {
-                    if let Some(ep) = self.rename_plan.iter().find_map(|(ep, f)| if f == file { Some(ep.clone()) } else { None }) {
-                        self.rename_plan.remove(&ep);
-                        if !self.files.contains(file) {
-                            self.files.push(file.clone());
-                        }
-                    }
+            // Handle drop into the unassign area (the right column's frame)
+            if unassign_area_response.response.hovered() && columns[1].input(|i| i.pointer.any_released()) {
+                if let Some(file) = columns[1].ctx().data(|d| d.get_temp::<LocalFile>(main_dnd_id)) {
+                    drag_drop_result = DragDropResult::Unassign { file };
                 }
             }
         });
 
-        // --- Post-UI-layout state mutations ---
-        if let Some((episode, file)) = dropped_on_episode {
-            if let Some(old_ep) = self.rename_plan.iter().find_map(|(ep, f)| if f == &file { Some(ep.clone()) } else { None }) {
-                self.rename_plan.remove(&old_ep);
+
+        // --- Process the result of the drag-and-drop operation after the UI has been drawn ---
+        match drag_drop_result {
+            DragDropResult::Assign { file, episode } => {
+                // Remove the file from the unassigned list.
+                self.files.retain(|f| f != &file);
+                // If the file was previously assigned to another episode, remove that old assignment.
+                self.rename_plan.retain(|_, v| v != &file);
+                // Insert the new assignment.
+                self.rename_plan.insert(episode, file);
             }
-            if let Some(old_file) = self.rename_plan.insert(episode, file.clone()) {
-                if !self.files.contains(&old_file) {
-                    self.files.push(old_file);
+            DragDropResult::Unassign { file } => {
+                // Remove the assignment from the plan.
+                self.rename_plan.retain(|_, v| v != &file);
+                // Add the file back to the unassigned list if it's not already there.
+                if !self.files.contains(&file) {
+                    self.files.push(file);
                 }
             }
-            self.files.retain(|f| f != &file);
+            DragDropResult::None => {}
         }
 
-        // Clear drag data on release
-        if pointer_released {
-            // Use egui::Id::NULL instead of egui::Id::nil()
-            ui.ctx().set_dragged_id(egui::Id::NULL);
+        // Clear the drag-and-drop payload when the mouse button is released, no matter what.
+        if ui.input(|i| i.pointer.any_released()) {
+            ui.ctx().data_mut(|d| d.remove::<LocalFile>(main_dnd_id));
         }
     }
 }
 
 // --- UI Helper Functions ---
 
-// Removed the `is_hovered` parameter as it's better to handle drawing logic outside
 fn drop_target_slot(ui: &mut egui::Ui) -> (egui::Rect, egui::Response) {
-    let (rect, response) =
-        ui.allocate_at_least(egui::vec2(ui.available_width(), 50.0), egui::Sense::hover());
+    let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), 60.0), egui::Sense::hover());
+    let is_hovered = ui.ctx().dragged_id().is_some() && response.hovered();
 
-    ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(50));
-
+    let color = if is_hovered {
+        egui::Color32::from_rgba_premultiplied(0, 255, 0, 20)
+    } else {
+        egui::Color32::from_gray(50)
+    };
+    ui.painter().rect_filled(rect, 4.0, color);
     (rect, response)
 }
 
 fn drag_source_slot(ui: &mut egui::Ui) -> (egui::Rect, egui::Response) {
-    let (rect, response) =
-        ui.allocate_at_least(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
-
-    ui.painter()
-        .rect_filled(rect, 4.0, egui::Color32::from_gray(60));
-
+    let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(60));
     (rect, response)
 }
