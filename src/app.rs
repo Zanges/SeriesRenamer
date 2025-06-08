@@ -241,6 +241,21 @@ impl eframe::App for SeriesRenamer {
                 }
             }
             ui.label(&self.fetch_status);
+
+            ui.separator();
+
+            if ui.button("Open Settings").clicked() {
+                match confy::get_configuration_file_path("series_renamer", None) {
+                    Ok(path) => {
+                        if let Err(e) = open::that(&path) {
+                            self.fetch_status = format!("Failed to open settings file: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        self.fetch_status = format!("Could not find settings file: {}", e);
+                    }
+                }
+            }
         });
 
         // --- Processing and Confirmation Windows ---
@@ -447,7 +462,7 @@ impl SeriesRenamer {
                                 // Get the mutable string buffer for this file's input field.
                                 let buffer = self.file_episode_inputs.entry(file.path.clone()).or_default();
 
-                                // Show the text input widget.
+                                // Show the text widget.
                                 ui.add(
                                     egui::TextEdit::singleline(buffer)
                                         .hint_text("Ep #")
