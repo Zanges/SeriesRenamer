@@ -1,6 +1,6 @@
 [package]
 name = "series_renamer"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["Zanges <zanges93@gmail.com>"]
 edition = "2021"
 include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml"]
