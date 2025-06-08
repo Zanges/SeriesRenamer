@@ -278,32 +278,40 @@ impl eframe::App for SeriesRenamer {
                         let original_path = &file.path;
                         if let Some(extension) = original_path.extension().and_then(|s| s.to_str())
                         {
-                            let new_name = format!(
-                                "S{:02}E{} - {}.{}",
-                                self.season_number, episode.episode, episode.title, extension
-                            );
+                            if let Ok(episode_number) = episode.episode.parse::<u32>() {
+                                let new_name = format!(
+                                    "S{:02}E{:02} - {}.{}",
+                                    self.season_number, episode_number, episode.title, extension
+                                );
 
-                            if let Some(parent_dir) = original_path.parent() {
-                                let new_path = parent_dir.join(&new_name);
-                                match std::fs::rename(original_path, &new_path) {
-                                    Ok(_) => {
-                                        rename_results.push(format!(
-                                            "Successfully renamed '{}' to '{}'",
-                                            original_path.display(),
-                                            new_name
-                                        ));
+                                if let Some(parent_dir) = original_path.parent() {
+                                    let new_path = parent_dir.join(&new_name);
+                                    match std::fs::rename(original_path, &new_path) {
+                                        Ok(_) => {
+                                            rename_results.push(format!(
+                                                "Successfully renamed '{}' to '{}'",
+                                                original_path.display(),
+                                                new_name
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            rename_results.push(format!(
+                                                "ERROR renaming {}: {}",
+                                                original_path.display(),
+                                                e
+                                            ));
+                                        }
                                     }
-                                    Err(e) => {
-                                        rename_results.push(format!(
-                                            "ERROR renaming {}: {}",
-                                            original_path.display(),
-                                            e
-                                        ));
-                                    }
+                                } else {
+                                    rename_results.push(format!(
+                                        "ERROR: Could not get parent directory for {}",
+                                        original_path.display()
+                                    ));
                                 }
                             } else {
                                 rename_results.push(format!(
-                                    "ERROR: Could not get parent directory for {}",
+                                    "ERROR: Could not parse episode number '{}' for {}",
+                                    episode.episode,
                                     original_path.display()
                                 ));
                             }
@@ -391,7 +399,11 @@ impl SeriesRenamer {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (episode, file) in &self.rename_plan {
                         let extension = file.path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                        let new_name = format!("S{:02}E{} - {}.{}", self.season_number, episode.episode, episode.title, extension);
+                        let new_name = if let Ok(episode_number) = episode.episode.parse::<u32>() {
+                            format!("S{:02}E{:02} - {}.{}", self.season_number, episode_number, episode.title, extension)
+                        } else {
+                            format!("S{:02}E{} - {}.{}", self.season_number, episode.episode, episode.title, extension)
+                        };
                         ui.label(format!(
                             "{} -> {}",
                             file.path.file_name().unwrap().to_str().unwrap(),
