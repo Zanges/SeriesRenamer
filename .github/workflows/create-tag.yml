@@ -1,0 +1,75 @@
+name: Create Tag and Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'The type of version bump to perform.'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push commits and tags
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Calculate new version
+        id: version_bumper
+        run: |
+          # Read the current version from Cargo.toml
+          current_version=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $current_version"
+
+          # Split version into components
+          major=$(echo $current_version | cut -d. -f1)
+          minor=$(echo $current_version | cut -d. -f2)
+          patch=$(echo $current_version | cut -d. -f3)
+
+          # Get the bump type from the input
+          bump_type=${{ github.event.inputs.bump }}
+
+          # Calculate the new version
+          if [ "$bump_type" == "patch" ]; then
+            patch=$((patch + 1))
+          elif [ "$bump_type" == "minor" ]; then
+            minor=$((minor + 1))
+            patch=0
+          elif [ "$bump_type" == "major" ]; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+          fi
+
+          new_version="$major.$minor.$patch"
+          echo "New version: $new_version"
+
+          # Set the new version as an output for subsequent steps
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+
+      - name: Update version in Cargo.toml
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ steps.version_bumper.outputs.new_version }}"/' Cargo.toml
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Commit and Push changes
+        run: |
+          git add Cargo.toml
+          git commit -m "Bump version to ${{ steps.version_bumper.outputs.new_version }}"
+          git push
+
+      - name: Create and Push Tag
+        run: |
+          git tag "v${{ steps.version_bumper.outputs.new_version }}"
+          git push origin "v${{ steps.version_bumper.outputs.new_version }}"
