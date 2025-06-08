@@ -256,6 +256,13 @@ impl eframe::App for SeriesRenamer {
                     }
                 }
             }
+
+            if ui.button("Get API Key").clicked() {
+                let url = "http://www.omdbapi.com/apikey.aspx";
+                if let Err(e) = open::that(url) {
+                    self.fetch_status = format!("Failed to open URL: {}", e);
+                }
+            }
         });
 
         // --- Processing and Confirmation Windows ---
