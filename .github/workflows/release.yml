@@ -1,57 +1,130 @@
-name: Release
+# .github/workflows/release.yml
 
-# This workflow runs whenever a new tag that looks like a version number (e.g., v1.2.3) is pushed.
+name: Create Release
+
+# This workflow is triggered manually from the Actions tab.
 on:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'The type of version bump to perform.'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 jobs:
-  # The 'build-release' job compiles the application for different operating systems.
+  # This job bumps the version, commits the change, and creates a git tag.
+  bump-and-tag:
+    name: Bump Version and Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push commits and tags
+    outputs:
+      new_version_tag: ${{ steps.version_bumper.outputs.new_version_tag }} # Output the new tag for other jobs
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Fetch all history for all tags and branches
+          fetch-depth: 0
+
+      - name: Calculate new version
+        id: version_bumper
+        run: |
+          # Read the current version from Cargo.toml
+          current_version=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $current_version"
+
+          # Split version into components
+          major=$(echo $current_version | cut -d. -f1)
+          minor=$(echo $current_version | cut -d. -f2)
+          patch=$(echo $current_version | cut -d. -f3)
+
+          # Get the bump type from the input
+          bump_type=${{ github.event.inputs.bump }}
+
+          # Calculate the new version
+          if [ "$bump_type" == "patch" ]; then
+            patch=$((patch + 1))
+          elif [ "$bump_type" == "minor" ]; then
+            minor=$((minor + 1))
+            patch=0
+          elif [ "$bump_type" == "major" ]; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+          fi
+
+          new_version="$major.$minor.$patch"
+          echo "New version: $new_version"
+
+          # Set the new version and tag as an output for subsequent steps
+          echo "new_version_tag=v$new_version" >> $GITHUB_OUTPUT
+
+      - name: Update version in Cargo.toml
+        run: |
+          new_version=$(echo "${{ steps.version_bumper.outputs.new_version_tag }}" | sed 's/v//')
+          sed -i 's/^version = ".*"/version = "'"$new_version"'"/' Cargo.toml
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Commit and Push changes
+        run: |
+          git add Cargo.toml
+          git commit -m "Bump version to ${{ steps.version_bumper.outputs.new_version_tag }}"
+          git push
+
+      - name: Create and Push Tag
+        run: |
+          git tag "${{ steps.version_bumper.outputs.new_version_tag }}"
+          git push origin "${{ steps.version_bumper.outputs.new_version_tag }}"
+
+  # This job builds the application for different operating systems.
   build-release:
-    name: Build Release
-    # It runs on a matrix of operating systems to create builds for each one.
+    name: Build Release Binaries
+    # It will only run after the 'bump-and-tag' job has successfully completed.
+    needs: bump-and-tag
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          # Linux (Ubuntu) build configuration
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: series-renamer-linux-x86_64
             asset_name: series-renamer-linux-x86_64.tar.gz
-          # Windows build configuration
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: series-renamer-windows-x86_64
             asset_name: series-renamer-windows-x86_64.zip
-          # macOS build configuration
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: series-renamer-macos-x86_64
             asset_name: series-renamer-macos-x86_64.tar.gz
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository at the new tag
         uses: actions/checkout@v4
+        with:
+          # Check out the specific tag created in the previous job
+          ref: ${{ needs.bump-and-tag.outputs.new_version_tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           target: ${{ matrix.target }}
 
-      # Installs required libraries for the Linux build, based on your README.md.
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
 
-      # Compiles the Rust code in release mode for the specified target.
       - name: Build binary
         run: cargo build --verbose --release --target ${{ matrix.target }}
 
-      # Packages the compiled binary into a compressed archive.
       - name: Package for Linux/macOS
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
         run: |
@@ -64,38 +137,38 @@ jobs:
         run: |
           mkdir release
           cp target/${{ matrix.target }}/release/series_renamer.exe release/
-          # 7z is a powerful archiver available on Windows runners.
           7z a ${{ matrix.asset_name }} ./release/*
 
-      # Uploads the packaged build as a workflow artifact to be used in the next job.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: ${{ matrix.asset_name }}
           path: ${{ matrix.asset_name }}
 
-  # The 'create-release' job creates a new GitHub Release and uploads the builds.
+  # This job creates the GitHub Release and uploads the compiled binaries.
   create-release:
     name: Create GitHub Release
-    runs-on: ubuntu-latest
-    # This job depends on the successful completion of the 'build-release' job.
+    # It runs only after all the builds are complete.
     needs: build-release
+    runs-on: ubuntu-latest
     permissions:
-      # This permission is required to create a release.
-      contents: write
+      contents: write # Required to create a release
     steps:
-      # Downloads all the build artifacts that were uploaded in the previous job.
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
+          # The path where artifacts will be downloaded.
+          # The structure will be artifacts/<artifact_name>/<file>
           path: artifacts
 
-      # Uses a popular action to create a GitHub Release.
-      # It automatically finds the tag, creates a release, and attaches the build files.
       - name: Create Release and Upload Assets
         uses: ncipollo/release-action@v1
         with:
-          # This glob pattern finds all the downloaded build archives.
+          # This glob pattern finds all the build archives in their subdirectories.
+          artifactErrorsFail: false
           artifacts: "artifacts/*/*"
+          # The tag name is passed from the first job.
+          tag: ${{ needs.bump-and-tag.outputs.new_version_tag }}
           # The GITHUB_TOKEN is automatically provided by GitHub.
           token: ${{ secrets.GITHUB_TOKEN }}
+
