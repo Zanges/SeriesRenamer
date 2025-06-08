@@ -159,7 +159,7 @@ impl eframe::App for SeriesRenamer {
             });
             ui.horizontal(|ui| {
                 ui.label("Season:");
-                ui.add(egui::DragValue::new(&mut self.season_number).clamp_range(1..=99));
+                ui.add(egui::DragValue::new(&mut self.season_number).range(1..=99));
             });
             ui.horizontal(|ui| {
                 ui.label("Series Directory:");
