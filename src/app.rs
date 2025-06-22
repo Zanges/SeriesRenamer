@@ -279,9 +279,10 @@ impl eframe::App for SeriesRenamer {
                         if let Some(extension) = original_path.extension().and_then(|s| s.to_str())
                         {
                             if let Ok(episode_number) = episode.episode.parse::<u32>() {
+                                let sanitized_title = Self::sanitize_title(&episode.title);
                                 let new_name = format!(
                                     "S{:02}E{:02} - {}.{}",
-                                    self.season_number, episode_number, episode.title, extension
+                                    self.season_number, episode_number, sanitized_title, extension
                                 );
 
                                 if let Some(parent_dir) = original_path.parent() {
@@ -345,6 +346,10 @@ impl eframe::App for SeriesRenamer {
 
 // --- Window and UI Logic ---
 impl SeriesRenamer {
+    fn sanitize_title(title: &str) -> String {
+        title.chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect()
+    }
+
     fn show_assignment_window(&mut self, ctx: &egui::Context) {
         if !self.show_process_window {
             return;
@@ -399,10 +404,11 @@ impl SeriesRenamer {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (episode, file) in &self.rename_plan {
                         let extension = file.path.extension().and_then(|s| s.to_str()).unwrap_or("");
+                        let sanitized_title = Self::sanitize_title(&episode.title);
                         let new_name = if let Ok(episode_number) = episode.episode.parse::<u32>() {
-                            format!("S{:02}E{:02} - {}.{}", self.season_number, episode_number, episode.title, extension)
+                            format!("S{:02}E{:02} - {}.{}", self.season_number, episode_number, sanitized_title, extension)
                         } else {
-                            format!("S{:02}E{} - {}.{}", self.season_number, episode.episode, episode.title, extension)
+                            format!("S{:02}E{} - {}.{}", self.season_number, episode.episode, sanitized_title, extension)
                         };
                         ui.label(format!(
                             "{} -> {}",
